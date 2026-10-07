@@ -1,0 +1,15 @@
+{
+  "name": "taller-ot-v2",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/security.test.mjs tests/photos.test.mjs tests/restore.test.mjs tests/verification-checklist.test.mjs tests/config.test.mjs tests/ui.test.mjs tests/pwa.test.mjs",
+    "test:browser": "node --test tests/ui.browser.mjs",
+    "build": "node scripts/build-pages.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0",
+    "@supabase/supabase-js": "2.117.3",
+    "@tailwindcss/node": "4.3.3",
+    "tailwindcss": "4.3.3"
+  }
+}

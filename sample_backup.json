@@ -1,0 +1,16 @@
+[
+  {
+    "orderNumber": 100,
+    "fecha": "2026-05-13",
+    "nombre": "Cliente ficticio — ejemplo sin datos reales",
+    "telefono": "",
+    "vehiculo": "Vehículo ficticio de demostración",
+    "dominio": "DEMO-000",
+    "novedades": "Registro sintético para probar la restauración. No representa un cliente ni un vehículo real.",
+    "garantia": false,
+    "fotos": [],
+    "createdAt": "2026-05-13T14:50:00.000Z",
+    "status": "Abierta",
+    "id": "test-restore-id"
+  }
+]

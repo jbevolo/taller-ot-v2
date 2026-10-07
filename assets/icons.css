@@ -1,0 +1,15 @@
+/* Decorative local symbols; adjacent labels remain the accessible action names. */
+.fas, .fab { display: inline-block; font-style: normal; font-family: Arial, sans-serif; line-height: 1; }
+.fa-camera::before { content: '▣'; }
+.fa-check-circle::before, .fa-check-square::before { content: '✓'; }
+.fa-chevron-left::before { content: '‹'; }
+.fa-chevron-right::before { content: '›'; }
+.fa-circle::before { content: '●'; }
+.fa-cloud-upload-alt::before { content: '↑'; }
+.fa-exclamation-triangle::before { content: '⚠'; }
+.fa-plus-circle::before, .fa-user-plus::before { content: '+'; }
+.fa-print::before { content: '▤'; }
+.fa-sign-in-alt::before { content: '→'; }
+.fa-spinner::before { content: '◌'; }
+.fa-square::before { content: '□'; }
+.fa-whatsapp::before { content: '↗'; }

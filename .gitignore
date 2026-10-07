@@ -1,0 +1,15 @@
+# macOS local metadata
+.DS_Store
+
+# Local Pi runtime state
+.atl/
+.codegraph/
+
+# Supabase CLI local link/cache state
+supabase/.temp/
+
+# Local browser test dependencies and output
+node_modules/
+test-results/
+playwright-report/
+dist/

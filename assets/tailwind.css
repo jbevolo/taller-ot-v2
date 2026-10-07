@@ -1,0 +1,13 @@
+@import "tailwindcss" source(none);
+@source "../index.html";
+
+/* Preserve the existing v3 shell's border and placeholder defaults. */
+@layer base {
+    *, ::before, ::after { border-color: var(--color-gray-200); }
+    input::placeholder, textarea::placeholder { color: var(--color-gray-400); }
+    button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
+}
+
+@utility shadow-sm {
+    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+}
