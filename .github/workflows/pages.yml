@@ -15,6 +15,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -23,9 +24,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - name: Install CI-only browser
-        run: npx playwright install --with-deps chromium
-      - run: npm run test:browser
+      - name: Select preinstalled browser
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          browser_path="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$browser_path" ] || [ ! -x "$browser_path" ]; then
+            echo "::error::No preinstalled Chrome/Chromium executable found; browser tests are required."
+            exit 1
+          fi
+          echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$browser_path" >> "$GITHUB_ENV"
+      - name: Run browser tests
+        timeout-minutes: 5
+        run: npm run test:browser
       - run: npm run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
@@ -34,6 +45,7 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write
