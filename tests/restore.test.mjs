@@ -40,7 +40,9 @@ function restoreSource() {
     const restoreEnd = html.indexOf('        // --- NOTIFICACIONES ---', restoreStart);
     assert.ok(start > 0 && normalizationEnd > start && restoreStart > normalizationEnd && restoreEnd > restoreStart,
         'restore functions must remain discoverable in the real inline application source');
-    return html.slice(start, normalizationEnd) + html.slice(restoreStart, restoreEnd);
+    const mediaStart = html.indexOf('        function mediaPhotoPath(');
+    const mediaEnd = html.indexOf('        function revokeMediaBlobs(', mediaStart);
+    return html.slice(mediaStart, mediaEnd) + html.slice(start, normalizationEnd) + html.slice(restoreStart, restoreEnd);
 }
 
 function createRestoreApp(rpcResult = { data: 1, error: null }) {
@@ -48,6 +50,7 @@ function createRestoreApp(rpcResult = { data: 1, error: null }) {
     const sandbox = vm.createContext({
         crypto: webcrypto,
         TextEncoder,
+        publicConfig: { url: 'https://independent.example.test' },
         currentUser: { id: USER_A },
         console: { error() {} },
         showNotification(message) { calls.notifications.push(message); },
@@ -124,4 +127,16 @@ test('restore refuses a captured backup after the signed-in owner changes', asyn
     await app.evaluate(`restoreToCloud(testValue, '${USER_A}')`, [currentOrder()]);
     assert.equal(app.calls.rpc.length, 0);
     assert.match(app.calls.notifications.at(-1), /sesión cambió/);
+});
+
+test('restore accepts durable owner paths and rejects foreign or unsafe media references', () => {
+    const app = createRestoreApp();
+    const photo = `${USER_A}/${ORDER_ID}.jpg`;
+    const attachment = `${USER_A}/verification/${ORDER_ID}.pdf`;
+    const result = app.evaluate(`normalizeBackup(testValue, '${USER_A}')`, [currentOrder({ fotos: [photo], verification_files: [attachment] })]);
+    assert.equal(result[0].fotos[0], photo);
+    for (const path of [`${USER_B}/${ORDER_ID}.jpg`, `${USER_A}/../${ORDER_ID}.jpg`, `${USER_A}%2f${ORDER_ID}.jpg`, 'https://foreign.test/photo.jpg']) {
+        assert.throws(() => app.evaluate(`normalizeBackup(testValue, '${USER_A}')`, [currentOrder({ fotos: [path] })]));
+    }
+    assert.throws(() => app.evaluate(`normalizeBackup(testValue, '${USER_A}')`, [currentOrder({ verification_files: [`${USER_B}/verification/${ORDER_ID}.pdf`] })]));
 });

@@ -322,10 +322,7 @@ test("admin detail can add and remove verification attachments safely", async ()
         uploaded,
     ]);
     assert.equal(storage.uploads.length, 1);
-    assert.deepEqual(
-        storage.removals.map((paths) => Array.from(paths)),
-        [[removed]],
-    );
+    assert.deepEqual(storage.removals, [], 'unlinking keeps objects recoverable by older backups');
 });
 
 test("admin detail retains verification uploads and removed existing attachments on ambiguous DB update", async () => {
@@ -512,7 +509,7 @@ test("admin detail, public view, and printing render verification safely", async
         app
             .get("view-order-content")
             .innerHTML.includes(
-                "https://example.test/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa/verification/22222222-2222-4222-8222-222222222222.pdf",
+                "22222222-2222-4222-8222-222222222222.pdf",
             ),
     );
     assert.ok(!app.get("view-order-content").innerHTML.includes(malicious));
@@ -523,7 +520,7 @@ test("admin detail, public view, and printing render verification safely", async
     assert.ok(printOutput.includes("Planilla de verificación"));
     assert.ok(
         printOutput.includes(
-            "https://example.test/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa/verification/22222222-2222-4222-8222-222222222222.pdf",
+            "22222222-2222-4222-8222-222222222222.pdf",
         ),
     );
     assert.ok(!printOutput.includes(malicious));

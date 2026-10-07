@@ -107,7 +107,7 @@ export async function createApp(options = {}) {
         elements.set(match[1], element);
     }
 
-    const calls = { print: [], queries: [], clients: [], auth: 0 };
+    const calls = { print: [], queries: [], clients: [], auth: 0, blobs: [], revoked: [] };
     const client = {
         auth: {
             getUser: async () => { calls.auth++; return { data: { user: null }, error: null }; },
@@ -134,7 +134,9 @@ export async function createApp(options = {}) {
         },
         storage: { from: () => ({
             upload: async path => ({ data: { path }, error: null }),
-            getPublicUrl: path => ({ data: { publicUrl: `https://example.test/${path}` } }),
+            getPublicUrl() { throw new Error('Public media is forbidden'); },
+            createSignedUrl: async path => ({ data: { signedUrl: `https://independent.example.test/storage/v1/object/sign/photos/${path}?token=test` }, error: null }),
+            download: async () => ({ data: new Blob(['private']), error: null }),
             remove: async () => ({ error: null })
         }) }
     };
@@ -166,7 +168,14 @@ export async function createApp(options = {}) {
             addEventListener() {}
         },
         console: { log() {}, error() {} },
-        URL,
+        URL: class extends URL {
+            static createObjectURL(blob) {
+                const url = `blob:test-${calls.blobs.length}`;
+                calls.blobs.push({ url, blob });
+                return url;
+            }
+            static revokeObjectURL(url) { calls.revoked.push(url); }
+        },
         URLSearchParams,
         Blob,
         TextEncoder,

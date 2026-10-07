@@ -1,6 +1,7 @@
 // Shell only: never store API responses, customer images, orders or sessions.
 const CACHE_PREFIX = 'taller-ot-v2:';
-const CACHE_NAME = `${CACHE_PREFIX}shell-v1`;
+// shell-v2: activation-aware build surface; still shell assets only.
+const CACHE_NAME = `${CACHE_PREFIX}shell-v2`;
 const BASE = self.registration.scope;
 const ASSETS = [
     'index.html', 'styles.css', 'config.js', 'manifest.json',

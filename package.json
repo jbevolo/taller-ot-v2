@@ -2,7 +2,7 @@
   "name": "taller-ot-v2",
   "private": true,
   "scripts": {
-    "test": "node --test tests/security.test.mjs tests/photos.test.mjs tests/restore.test.mjs tests/verification-checklist.test.mjs tests/config.test.mjs tests/ui.test.mjs tests/pwa.test.mjs",
+    "test": "node --test tests/security.test.mjs tests/photos.test.mjs tests/private-storage.test.mjs tests/restore.test.mjs tests/bootstrap-private-cloud.test.mjs tests/verification-checklist.test.mjs tests/config.test.mjs tests/ui.test.mjs tests/pwa.test.mjs",
     "test:browser": "node --test tests/ui.browser.mjs",
     "build": "node scripts/build-pages.mjs"
   },

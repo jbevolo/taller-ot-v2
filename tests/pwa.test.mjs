@@ -6,6 +6,10 @@ import vm from 'node:vm';
 
 const root = new URL('../', import.meta.url);
 const read = path => readFile(new URL(path, root), 'utf8');
+// Default deployment builds must ignore any ambient activation environment.
+const clean = { ...process.env };
+for (const name of ['TALLER_OT_SUPABASE_URL', 'TALLER_OT_EXPECTED_SUPABASE_URL',
+    'TALLER_OT_SUPABASE_PUBLISHABLE_KEY']) delete clean[name];
 
 test('shell dependencies are relative and icons are genuine PNGs with declared dimensions', async () => {
     const html = await read('index.html');
@@ -51,6 +55,7 @@ test('worker precaches only local shell and deletes only its own cache namespace
     handlers.install({ waitUntil: task => { pending = task; } });
     await pending;
     assert.match(cached[0].name, /^taller-ot-v2:/);
+    assert.equal(cached[0].name, 'taller-ot-v2:shell-v2');
     for (const path of cached[0].paths) assert.ok(new URL(path, scope).href.startsWith(scope));
     handlers.activate({ waitUntil: task => { pending = task; } });
     await pending;
@@ -81,7 +86,7 @@ test('worker ignores customer/cloud/auth traffic and safely falls back for query
 });
 
 test('build emits an explicit public allowlist with empty configuration, never repository contents', async () => {
-    execFileSync(process.execPath, ['scripts/build-pages.mjs'], { cwd: root });
+    build(clean);
     const files = await readdir(new URL('dist/', root), { recursive: true });
     assert.deepEqual(files.sort(), [
         'assets', 'assets/icons.css', 'assets/supabase.js', 'assets/utilities.css',
@@ -102,4 +107,59 @@ test('build emits an explicit public allowlist with empty configuration, never r
     }
     assert.doesNotMatch(html, /sb_secret_[A-Za-z0-9]{10,}|service_role["']\s*:\s*["'][^"']+/);
     assert.match(await read('dist/assets/supabase.js'), /createClient/);
+});
+
+const build = env => execFileSync(process.execPath, ['scripts/build-pages.mjs'], { cwd: root, env });
+
+const attempt = env => {
+    try { return { output: execFileSync(process.execPath, ['scripts/build-pages.mjs'],
+        { cwd: root, env, stdio: 'pipe' }).toString() }; }
+    catch (error) { return { failed: true, output: `${error.stderr ?? ''}${error.stdout ?? ''}` }; }
+};
+
+test('activated build writes only the declared public values, and the default build restores disconnected', async () => {
+    const partial = attempt({ ...clean, TALLER_OT_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co' });
+    assert.equal(partial.failed, true);
+    assert.match(partial.output, /activation/i);
+    assert.match(await read('dist/config.js'), /supabaseUrl:\s*''/);
+    const env = {
+        ...clean,
+        TALLER_OT_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+        TALLER_OT_EXPECTED_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+        TALLER_OT_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_synthetic_fixture_only'
+    };
+    build(env);
+    assert.match(await read('dist/config.js'),
+        /supabaseUrl:\s*'https:\/\/abcdefghijklmnopqrst\.supabase\.co'/);
+    assert.match(await read('dist/config.js'), /supabaseKey:\s*'sb_publishable_synthetic_fixture_only'/);
+    assert.deepEqual((await readdir(new URL('dist/', root), { recursive: true })).sort(), [
+        'assets', 'assets/icons.css', 'assets/supabase.js', 'assets/utilities.css',
+        'config.example.js', 'config.js', 'icons', 'icons/icon-192.png', 'icons/icon-512.png',
+        'index.html', 'manifest.json', 'styles.css', 'sw.js'
+    ].sort());
+    build(clean);
+    assert.match(await read('dist/config.js'), /supabaseUrl:\s*''[\s\S]*supabaseKey:\s*''/);
+    assert.doesNotMatch(await read('dist/config.js'), /supabase\.co/);
+});
+
+test('build refuses privileged keys without echoing them into the artifact or output', async () => {
+    const rejected = attempt({ ...clean, TALLER_OT_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+        TALLER_OT_EXPECTED_SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+        TALLER_OT_SUPABASE_PUBLISHABLE_KEY: 'sb_secret_synthetic_fixture' });
+    assert.equal(rejected.failed, true);
+    assert.match(rejected.output, /activation/i);
+    assert.doesNotMatch(rejected.output, /sb_secret_synthetic_fixture/);
+    // Rejected activation is non-destructive: the previous disconnected artifact survives.
+    assert.match(await read('dist/config.js'), /supabaseUrl:\s*''/);
+    build(clean);
+});
+
+test('Pages workflow activates only on main push from repository secrets, never a literal key', async () => {
+    const workflow = await read('.github/workflows/pages.yml');
+    assert.match(workflow, /secrets\.TALLER_OT_SUPABASE_PUBLISHABLE_KEY/);
+    assert.match(workflow, /vars\.TALLER_OT_SUPABASE_URL|secrets\.TALLER_OT_SUPABASE_URL/);
+    assert.match(workflow, /if:.*github\.ref == 'refs\/heads\/main'/);
+    assert.doesNotMatch(workflow, /sb_publishable_|sb_secret_|eyJhbGci|supabase\.co/);
+    assert.match(workflow, /permissions:\s*\n\s+contents: read/);
+    assert.doesNotMatch(workflow, /id-token: write[\s\S]*build:/);
 });

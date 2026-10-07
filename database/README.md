@@ -1,8 +1,16 @@
 # Prepare safe order operations
 
-`safe-order-operations.sql` requires manual review and application by an authorized operator in the **new independent project**. Its presence in this repository does not mean it is deployed. T1 performs no database operations or live integration verification.
+For a fresh private project, run **`bootstrap-private-cloud.sql` only**, as one complete SQL Editor transaction. It contains the schema, owner policies, private bucket, and exact embedded atomic definitions from `safe-order-operations.sql`. No remote SQL or live integration has been performed by this work unit; local execution uses simulated Supabase schemas.
 
-## Apply after provisioning
+## Fresh private setup
+
+Follow [the exact operator sequence](../docs/SETUP.md#apply-the-sql-safely) for project `frkxjospolfxnkcgbgko`. Use an authorized privileged SQL Editor role, never browser credentials. The bootstrap rejects any existing application table/function/bucket and any Storage object policy, including unrelated policies. It does not replace objects or repair unknown state. Reruns fail closed, even after successful setup.
+
+Private references are `{owner_uuid}/{file_uuid}.jpg` (also JPEG/PNG) or `{owner_uuid}/verification/{file_uuid}.{jpg,jpeg,png,pdf,xls,xlsx}`. Direct writes, restore, and photo additions/removals enforce ownership and reject URLs, traversal, encoded slashes, null elements, and foreign prefixes. The bucket is private, limited to 20 MiB and the five documented MIME types; INSERT/SELECT/DELETE policies are authenticated owner-only. RPCs are security-invoker with bounded search paths and authenticated-only execution. Do not activate the frontend until private upload/rendering and configured-build work are complete.
+
+## Generic migration after audited provisioning
+
+`safe-order-operations.sql` is retained for separately audited existing schemas; it does not provision private Storage and allows legacy HTTPS photo references. Do not use it instead of the private bootstrap for this fresh project.
 
 1. Prepare the table, authentication, owner-only grants/RLS, and Storage in [SETUP](../docs/SETUP.md).
 2. Inspect constraints, triggers, foreign keys, grants, and every applicable RLS policy. Back up any existing data and test recovery outside production.
@@ -30,6 +38,6 @@ The browser fails closed when an RPC is missing. There is no direct-table photo-
 
 ## Verification and rollback
 
-Use the focused frontend command in SETUP for mock-only checks. The separate `tests/database.test.mjs` suite manages a local PostgreSQL cluster; inspect its requirements and safety before running it. It was not run for T1.
+`npm test` includes bootstrap lockstep assertions and real inline frontend tests with mocked boundaries. `node --test tests/database.test.mjs` requires local `initdb`, `pg_ctl`, and `psql`; it creates a fresh socket-only temporary cluster, strips ambient PostgreSQL/DSN settings, and cleans only that cluster. It executes the full private bootstrap with simulated auth/Storage schemas, tests rollback on unexpected policies/public bucket, and proves two-owner table/media isolation. This is real PostgreSQL execution, not proof of the hosted Storage service or real API behavior.
 
 To disable restore/photo mutations, an authorized operator can revoke execution on exactly `restore_work_orders(jsonb, uuid)` and `change_order_photos(uuid, jsonb, jsonb, uuid)` from `authenticated`. The frontend then reports failure without unsafe fallback. Preserve verification columns containing data; dropping them is not a frontend rollback.

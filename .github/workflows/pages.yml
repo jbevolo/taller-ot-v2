@@ -1,4 +1,4 @@
-name: Deploy disconnected Pages shell
+name: Deploy Pages shell
 
 on:
   push:
@@ -37,7 +37,16 @@ jobs:
       - name: Run browser tests
         timeout-minutes: 5
         run: npm run test:browser
-      - run: npm run build
+      - name: Activate configured cloud build
+        if: github.ref == 'refs/heads/main' && vars.TALLER_OT_SUPABASE_URL != '' && vars.TALLER_OT_EXPECTED_SUPABASE_URL != '' && secrets.TALLER_OT_SUPABASE_PUBLISHABLE_KEY != ''
+        env:
+          TALLER_OT_SUPABASE_URL: ${{ vars.TALLER_OT_SUPABASE_URL }}
+          TALLER_OT_EXPECTED_SUPABASE_URL: ${{ vars.TALLER_OT_EXPECTED_SUPABASE_URL }}
+          TALLER_OT_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.TALLER_OT_SUPABASE_PUBLISHABLE_KEY }}
+        run: npm run build
+      - name: Build disconnected public shell
+        if: github.ref != 'refs/heads/main' || vars.TALLER_OT_SUPABASE_URL == '' || vars.TALLER_OT_EXPECTED_SUPABASE_URL == '' || secrets.TALLER_OT_SUPABASE_PUBLISHABLE_KEY == ''
+        run: npm run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

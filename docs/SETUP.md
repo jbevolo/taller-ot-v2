@@ -12,66 +12,65 @@ Connection labels distinguish an unconfigured cloud, local demo, browser-reporte
 
 ## Setup path
 
-1. Have the authorized operator prepare the new Supabase project, email authentication, table, owner policies, and Storage described below.
-2. Review and apply `database/safe-order-operations.sql` following [the database guide](../database/README.md). It requires an existing table and audited RLS.
-3. Copy the fields from `config.example.js` into `config.js`. Set `supabaseUrl` to the new HTTPS project origin and `supabaseKey` to its public publishable key (preferred) or legacy `anon` key.
-4. Serve the application over HTTPS. Missing, invalid, or privileged configuration displays the setup screen without constructing a client. The current Pages build deliberately replaces configuration with empty values; changing local `config.js` does **not** activate the deployed cloud. A future authorized cloud activation must deliberately review the build's public configuration policy, rebuild and deploy.
-5. Verify the new environment with synthetic records and two independent users before entering workshop data.
+1. Have the authorized operator open the independent project `frkxjospolfxnkcgbgko` (API origin `https://frkxjospolfxnkcgbgko.supabase.co`) and prepare email authentication.
+2. Review and run the **entire** `database/bootstrap-private-cloud.sql` once in that project's SQL Editor, following [the database guide](../database/README.md). It includes the table, owner RLS, private Storage, and atomic functions; no second migration is needed.
+3. Copy the fields from `config.example.js` into `config.js`. Set `supabaseUrl` to the new HTTPS project origin and `supabaseKey` to its public publishable key. Missing, invalid, or privileged configuration displays the setup screen without constructing a client. Local `config.js` is used only when you serve the source yourself; **the build never reads it**.
+4. **Optional — activate the deployed Pages site.** Add repository Actions secrets/variables, then let a push to `main` build the configured shell (see [Activate the deployed build](#activate-the-deployed-build)). Without them the deployed build stays a disconnected demo, which is the default and a valid end state.
+5. Verify the new environment with synthetic records and two independent users before entering workshop data. Live activation and cloud isolation remain unverified by this work unit; they require explicit authorization.
 
-`config.js` is public. Never place `sb_secret_*`, `service_role`, database passwords, or management tokens there. Public keys are safe in the browser **only when RLS and Storage policies enforce the intended permissions**. The browser's key validation prevents common configuration mistakes; database authorization remains authoritative.
+`config.js` is public. Never place `sb_secret_*`, `service_role`, database passwords, or management tokens there — not in the file, not in a workflow, not in documentation. Public keys are safe in the browser **only when RLS and Storage policies enforce the intended permissions**. The browser's key validation prevents common configuration mistakes; database authorization remains authoritative.
+
+## Activate the deployed build
+
+Activation is optional. Without the values below, `npm run build` and the Pages workflow publish a disconnected demo shell.
+
+```sh
+TALLER_OT_SUPABASE_URL=https://<new-project-ref>.supabase.co \
+TALLER_OT_EXPECTED_SUPABASE_URL=https://<new-project-ref>.supabase.co \
+TALLER_OT_SUPABASE_PUBLISHABLE_KEY=<public publishable key> \
+npm run build
+```
+
+| Input | Meaning | Rejected when |
+| --- | --- | --- |
+| `TALLER_OT_SUPABASE_URL` | Bare HTTPS project origin | Not HTTPS, has credentials/path/query, not a `*.supabase.co` host |
+| `TALLER_OT_EXPECTED_SUPABASE_URL` | Confirmation of the intended target | Does not equal the URL origin, so a wrong project cannot be activated |
+| `TALLER_OT_SUPABASE_PUBLISHABLE_KEY` | Public publishable key only | `sb_secret_*`, any JWT, empty, or non-`sb_publishable_*` value |
+
+All three are required together; a partial set fails the build before touching `dist/`. The build logs only the project origin, never the key. Only `dist/config.js` changes.
+
+For the Pages workflow, set `TALLER_OT_SUPABASE_URL` and `TALLER_OT_EXPECTED_SUPABASE_URL` as repository **Actions variables** and `TALLER_OT_SUPABASE_PUBLISHABLE_KEY` as an **Actions secret** (secrets are used for the key even though it is publishable). The activated build runs only on pushes to `main` when all three exist; every other run builds the disconnected shell. Do not paste the key value into the workflow file or this document.
 
 ## Table and ownership
 
-The following is a schema reference for the **new** project, not evidence of a deployed schema. An authorized operator must review it before applying it.
+The bootstrap is the executable schema reference, not evidence of deployment. All fields are required except nullable `monto_cobrado`; defaults are described below.
 
-```sql
-create table public.work_orders (
-    id uuid primary key default gen_random_uuid(),
-    user_id uuid not null references auth.users(id),
-    order_number integer not null,
-    fecha date not null,
-    nombre text not null,
-    telefono text default '',
-    vehiculo text not null,
-    dominio text not null,
-    novedades text not null,
-    garantia boolean default false,
-    oblea boolean default false,
-    ph boolean default false,
-    nv boolean default false,
-    retencion boolean default false,
-    mangueras boolean default false,
-    fotos text[] default '{}',
-    status text default 'Abierta',
-    monto_cobrado numeric,
-    forma_pago text default '',
-    notas_extra text default '',
-    created_at timestamptz default now()
-);
+| Fields | Type and contract |
+|---|---|
+| `id`, `user_id` | UUID primary key (random default), authenticated owner referencing `auth.users` |
+| `order_number`, `fecha` | Positive integer; date |
+| `nombre`, `vehiculo`, `dominio`, `novedades` | Required text |
+| `telefono`, `forma_pago`, `notas_extra` | Text, empty default |
+| `garantia`, `oblea`, `ph`, `nv`, `retencion`, `mangueras` | Boolean, false default |
+| `fotos`, `verification_files` | Text arrays, empty default; canonical owner-prefixed private paths only |
+| `verification_checklist` | JSONB, empty default or complete canonical twelve-item checklist |
+| `status` | `Abierta` default or `Finalizada` |
+| `monto_cobrado`, `created_at` | Nullable nonnegative numeric; timestamp with time zone, current-time default |
 
-alter table public.work_orders enable row level security;
-revoke all on public.work_orders from anon;
-grant select, insert, update, delete on public.work_orders to authenticated;
-create policy owner_orders on public.work_orders
-    for all to authenticated
-    using ((select auth.uid()) = user_id)
-    with check ((select auth.uid()) = user_id);
-```
-
-The migration adds `verification_checklist` (JSONB), `verification_files` (text array), their validation constraints, and the atomic restore/photo helpers. Checklist updates are owner-filtered table updates validated by those constraints; no checklist RPC exists.
+Only authenticated owners receive table CRUD access. RLS checks both existing and replacement ownership; anonymous access is not granted. Checklist updates remain owner-filtered table updates validated by constraints; no checklist RPC exists.
 
 Do not add anonymous `SELECT` policies to make customer links work. The existing `?id=<uuid>` route requires a signed-in owner and still applies owner filters and RLS. A UUID is not an authorization mechanism. Customer access needs a separately reviewed, narrowly scoped sharing endpoint before it can be enabled.
 
 ## Storage contract
 
 - Bucket: `photos`. Photo paths are `{owner_uuid}/{random_uuid}.jpg`; verification attachments use `{owner_uuid}/verification/{random_uuid}.{extension}`.
-- Allowed verification types: JPG, PNG, PDF, XLS, XLSX; the UI caps each verification attachment at 20 MiB. Configure matching bucket limits and content types.
-- Upload and deletion policies must restrict authenticated users to their own first path segment, for example `(storage.foldername(name))[1] = (select auth.uid())::text`, together with `bucket_id = 'photos'`. Audit all existing policies; permissive policies combine with OR.
-- The current application uses `getPublicUrl`, so it expects public object downloads. Anyone holding an object URL can read that object, even after logout. If private attachments are required, implement signed downloads and private-bucket policies before activation.
+- The bootstrap creates a **private** bucket with a 20 MiB per-object limit and JPG/PNG/PDF/XLS/XLSX MIME allowlist. Photo references permit JPG/JPEG/PNG; attachment references also permit PDF/XLS/XLSX.
+- INSERT, SELECT, and DELETE policies require `bucket_id = 'photos'`, the authenticated owner prefix, and the exact UUID filename shape. No UPDATE/upsert policy, anonymous policy, traversal, encoded separator, or foreign URL is accepted.
+- Photos are resolved through session-scoped signed links that expire after 5 minutes and are renewed on access; attachments are downloaded through authenticated storage access. Durable records and backups keep stable owner-prefixed paths, never signed URLs.
 - Removing an order photo updates its database references atomically and preserves the object for backups or other references. Removing a verification attachment cleans up only a confirmed, owner-scoped path after the database save succeeds.
 - Explicit write rejection compensates new uploads. Unknown write outcomes retain objects and show a recovery message. Check the order before retrying; new-order retries are blocked until reload to avoid duplicate inserts.
 
-Backups contain URLs and paths, not object bytes. Restoring a backup does not transfer Storage objects between projects. `sample_backup.json` is an unmistakably fictional legacy-format example with no photo URLs.
+Backups contain durable paths, not object bytes or expiring signed links. Restore rejects foreign owners and legacy photo URLs; it does not transfer Storage objects between projects. `sample_backup.json` is an unmistakably fictional legacy-format example with no photo URLs. Old generic atomic SQL can still accept HTTPS photo URLs for compatibility; the private bootstrap's table constraint and delta validation cannot.
 
 ## Authentication redirects
 
@@ -79,24 +78,22 @@ In the new project's Authentication → URL Configuration, set **Site URL** to `
 
 ## Apply the SQL safely
 
-Use the new project's SQL Editor to run the schema/RLS above, then the complete reviewed `database/safe-order-operations.sql`. Alternatively, an authorized operator can apply them through a private database connection:
+1. Confirm the dashboard project reference is **frkxjospolfxnkcgbgko**, never the original project. Review the complete SQL before execution.
+2. In SQL Editor, use the project's privileged database operator role (normally `postgres`), authorized to create tables/functions, grant permissions, insert bucket metadata, lock Storage tables, and create Storage policies. Never run as a browser role or paste database credentials into the application.
+3. Paste the complete `database/bootstrap-private-cloud.sql`, including `begin;` and `commit;`, into one new query and run it once. SQL Editor cannot resolve `psql` include commands; all atomic definitions are embedded and tested in lockstep here.
+4. If any statement fails, the transaction rolls back. If the editor retains an aborted transaction, issue `rollback;` before further inspection. Do not run selected fragments, remove guards, delete policies, or flip a public bucket to private to force success.
+5. Confirm the owner policy, private bucket, size/MIME settings, and RPC grants in the dashboard. Report successful operator setup before any activation. Two synthetic users must subsequently prove owner isolation through the real API after authorization.
 
-```sh
-# NEW_PROJECT_DATABASE_URL stays in the operator's environment, never in config.js or CI.
-psql "$NEW_PROJECT_DATABASE_URL" -v ON_ERROR_STOP=1 -f /private/path/new-project-schema.sql
-psql "$NEW_PROJECT_DATABASE_URL" -v ON_ERROR_STOP=1 -f database/safe-order-operations.sql
-```
-
-Save the schema/RLS block above as the first file, and review both before execution. These are operator instructions, not commands run by this release. For Storage, create the `photos` bucket only after accepting the public-download caveat above. Create authenticated `INSERT`, `SELECT`, and `DELETE` policies on `storage.objects`, each constrained to `bucket_id = 'photos'` and `(storage.foldername(name))[1] = (select auth.uid())::text`; use `WITH CHECK` for inserts and `USING` for reads/deletes. Never enable unrestricted uploads or change someone else's project policies.
+This is intentionally one-shot: any existing `work_orders` table (empty or populated), application helper, `photos` bucket (private or public), or Storage object policy causes an abort. Unrelated Storage policies also require manual audit because permissive policies OR together. A successful rerun also aborts safely; no automatic repair or destructive replacement is attempted. These instructions do not authorize the agent to run remote SQL.
 
 ## Offline and privacy limits
 
 - The installed worker restores the shell and synthetic read-only demo after one successful online visit. First-ever offline visits cannot install it. Real-cloud authentication, queries and mutations require network; there is **no offline save or sync queue**.
 - Only explicit local shell assets are cached. Query strings are not navigation cache keys; a cached shell still runs the original authenticated-owner checks for `?id=`. Customer data/images, API and Storage responses, arbitrary local URLs and authenticated requests never enter worker caches.
 - Cleanup removes only this application's `taller-ot-v2:` caches, not sibling sites on `github.io`. Old unscoped `taller-ot-v1` caches are deliberately not deleted because ownership cannot be established. An operator can inspect/remove a known legacy cache manually in browser developer tools.
-- Worker caches contain no auth tokens or orders. The Supabase SDK may persist its usual session in browser storage; signing out clears app state, not downloaded backup files or already public object URLs. Shared devices need explicit logout and operator-approved browser-data cleanup.
-- Open tabs keep their matching worker until they close; there is no forced mid-form update. Increment the shell cache version in `sw.js` for future shell releases. Close old tabs and revisit online to install an update. Browser HTTP caches remain browser-managed; this is not an all-device erasure guarantee.
-- Setup documentation is linked on GitHub, excluded from the Pages artifact, and unavailable offline. Build output remains disconnected until a separately authorized cloud activation.
+- Worker caches contain no auth tokens or orders. The Supabase SDK may persist its usual session in browser storage. Logging out clears local media references and revokes blob URLs, but signed photo links already issued stay usable until they expire (5 minutes) and files already downloaded cannot be revoked by the application. Shared devices need explicit logout and operator-approved browser-data cleanup.
+- Open tabs keep their matching worker until they close; there is no forced mid-form update. The current shell cache version is `shell-v2`; increment it in `sw.js` for future shell releases. Close old tabs and revisit online to install an update. Browser HTTP caches remain browser-managed; this is not an all-device erasure guarantee.
+- Setup documentation is linked on GitHub, excluded from the Pages artifact, and unavailable offline. Build output stays disconnected until an operator supplies the activation values and an authorized deployment follows.
 
 ## Local verification
 

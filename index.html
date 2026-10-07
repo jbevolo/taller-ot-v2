@@ -587,6 +587,93 @@
         let cloudState = 'unverified';
         const dirtyForms = new Set();
         const dialogStack = [];
+        const PHOTO_URL_TTL = 300;
+        const photoUrlCache = new Map();
+        const mediaBlobUrls = new Map();
+        let mediaViewEpoch = 0;
+        let lightboxSequence = 0;
+
+        function mediaContext() {
+            return { ...accountContext(), view: mediaViewEpoch };
+        }
+
+        function isCurrentMedia(context) {
+            return isCurrentContext(context) && context.view === mediaViewEpoch && !logoutPending;
+        }
+
+        function mediaPhotoPath(reference, ownerId) {
+            if (isOwnerPhotoPath(reference, ownerId)) return reference;
+            // Convert only canonical public references from this project's exact bucket.
+            // Never decode separators, accept query tokens, or fetch a foreign legacy URL.
+            const prefix = `${publicConfig?.url}/storage/v1/object/public/photos/`;
+            if (typeof reference === 'string' && reference.startsWith(prefix)) {
+                const path = reference.slice(prefix.length);
+                if (isOwnerPhotoPath(path, ownerId)) return path;
+            }
+            return '';
+        }
+
+        function revokeMediaBlobs(group) {
+            for (const [url, value] of mediaBlobUrls) {
+                if (group === undefined || value === group) {
+                    URL.revokeObjectURL(url);
+                    mediaBlobUrls.delete(url);
+                }
+            }
+        }
+
+        function createMediaBlob(blob, group) {
+            const url = URL.createObjectURL(blob);
+            mediaBlobUrls.set(url, group);
+            return url;
+        }
+
+        async function resolvePhotoUrl(reference, context = mediaContext()) {
+            requireContext(context);
+            const path = mediaPhotoPath(reference, context.userId);
+            if (!path || !isCurrentMedia(context)) throw new Error('Foto privada fuera de esta cuenta o vista.');
+            const cached = photoUrlCache.get(path);
+            if (cached?.owner === context.userId && cached.epoch === context.epoch && cached.expires > Date.now()) return cached.url;
+            const started = Date.now();
+            const result = await supabaseClient.storage.from('photos').createSignedUrl(path, PHOTO_URL_TTL);
+            if (!isCurrentMedia(context)) return '';
+            const url = safeHttpsUrl(result?.data?.signedUrl);
+            if (result?.error || !url || new URL(url).origin !== publicConfig.url) throw new Error('No se pudo cargar la foto. Vuelve a intentarlo.');
+            photoUrlCache.set(path, { url, expires: started + PHOTO_URL_TTL * 1000, owner: context.userId, epoch: context.epoch });
+            return url;
+        }
+
+        async function downloadVerificationFile(path, context = mediaContext()) {
+            requireContext(context);
+            if (!VERIFICATION_PATH.test(path) || path.split('/')[0] !== context.userId) throw new Error('Adjunto fuera de esta cuenta.');
+            if (!isCurrentMedia(context)) return;
+            const result = await supabaseClient.storage.from('photos').download(path);
+            if (!isCurrentMedia(context)) return;
+            if (result?.error || !(result?.data instanceof Blob)) throw new Error('No se pudo descargar el adjunto. Vuelve a intentarlo.');
+            const url = createMediaBlob(result.data, 'download');
+            try {
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = path.split('/').pop();
+                link.click();
+            } finally { revokeMediaBlobs('download'); }
+        }
+
+        function verificationDownloadButton(path, context) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'secondary-button break-words';
+            button.textContent = `Descargar adjunto ${path.split('/').pop()}`;
+            button.disabled = path.split('/')[0] !== context.userId;
+            button.onclick = async () => {
+                if (button.disabled || !isCurrentMedia(context)) return;
+                button.disabled = true;
+                try { await downloadVerificationFile(path, context); }
+                catch { if (isCurrentMedia(context)) showNotification('No se pudo descargar el adjunto. Vuelve a intentarlo.'); }
+                finally { if (isCurrentMedia(context)) button.disabled = false; }
+            };
+            return button;
+        }
 
         function accountContext() {
             return { userId: currentUser?.id, epoch: sessionEpoch };
@@ -763,6 +850,11 @@
             const index = dialogStack.findIndex(entry => entry.element === element);
             const entry = index >= 0 ? dialogStack.splice(index, 1)[0] : null;
             element.classList.add('hidden');
+            if (id === 'view-order-modal') mediaViewEpoch++;
+            if (id === 'lightbox-modal') {
+                lightboxSequence++;
+                document.getElementById('lightbox-img').src = '';
+            }
             element.inert = false;
             if (dirtyId) dirtyForms.delete(dirtyId);
             syncDialogAccessibility();
@@ -862,6 +954,10 @@
         }
 
         function clearSessionState() {
+            mediaViewEpoch++;
+            lightboxSequence++;
+            photoUrlCache.clear();
+            revokeMediaBlobs();
             demoMode = false;
             dirtyForms.clear();
             for (const entry of [...dialogStack].reverse()) closeDialog(entry.element.id, true);
@@ -1446,11 +1542,12 @@
          * @returns {void}
          */
         function renderFotosPreview() {
+            revokeMediaBlobs('preview');
             fotosPreview.innerHTML = '';
             selectedFotosFiles.forEach((foto, i) => {
                 const div = document.createElement('div');
                 div.className = "relative h-16 w-full";
-                div.innerHTML = `<img src="${URL.createObjectURL(foto.blob)}" alt="Foto seleccionada ${i + 1}" width="90" height="90" class="h-full w-full object-cover rounded-lg"><button type="button" aria-label="Quitar foto ${i + 1}" class="absolute top-0 right-0 bg-red-500 text-white rounded-full min-w-[44px] min-h-[44px] flex items-center justify-center text-sm font-bold shadow-lg" onclick="removeFoto(${i})">&times;</button>`;
+                div.innerHTML = `<img src="${createMediaBlob(foto.blob, 'preview')}" alt="Foto seleccionada ${i + 1}" width="90" height="90" class="h-full w-full object-cover rounded-lg"><button type="button" aria-label="Quitar foto ${i + 1}" class="absolute top-0 right-0 bg-red-500 text-white rounded-full min-w-[44px] min-h-[44px] flex items-center justify-center text-sm font-bold shadow-lg" onclick="removeFoto(${i})">&times;</button>`;
                 fotosPreview.appendChild(div);
             });
         }
@@ -1473,7 +1570,7 @@
                 if (!result || result.error) return true;
                 for (const file of removable) {
                     delete file.uploadedPath;
-                    delete file.uploadedUrl;
+                    delete file.uploaded;
                 }
                 return false;
             } catch { return true; }
@@ -1502,7 +1599,11 @@
             try {
                 for (const file of files) {
                     requireContext(context);
-                    if (file.uploadedPath && file.uploadedUrl) continue;
+                    if (file.uploaded && file.uploadedPath) {
+                        const valid = verification ? VERIFICATION_PATH.test(file.uploadedPath) && file.uploadedPath.split('/')[0] === context.userId : isOwnerPhotoPath(file.uploadedPath, context.userId);
+                        if (!valid) throw new Error('La subida pertenece a otra cuenta.');
+                        continue;
+                    }
                     const extension = verification ? VERIFICATION_TYPES[file.type] : 'jpg';
                     const path = `${context.userId}/${verification ? 'verification/' : ''}${crypto.randomUUID()}.${extension}`;
                     file.uploadedPath = path;
@@ -1517,12 +1618,10 @@
                         throw new Error(result.error.message);
                     }
                     if (!result?.data || result.data.path !== path) throw new Error('Respuesta de Storage inválida.');
-                    const url = supabaseClient.storage.from('photos').getPublicUrl(path)?.data?.publicUrl;
-                    if (!safeHttpsUrl(url)) throw new Error('Storage no devolvió una URL HTTPS válida.');
-                    file.uploadedUrl = url;
+                    file.uploaded = true;
                     requireContext(context);
                 }
-                return files.map(file => verification ? file.uploadedPath : file.uploadedUrl);
+                return files.map(file => file.uploadedPath);
             } catch (cause) {
                 const error = operationFailure(cause.message, 'upload');
                 error.cleanupFailed = await cleanupUploads(newUploads, context);
@@ -1577,14 +1676,15 @@
             return `${message}: ${error.message}${error.cleanupFailed ? ' La compensación falló parcialmente; revisa Storage.' : ''}`;
         }
 
-        function validPhotoArray(value) {
-            return Array.isArray(value) && value.every(url => !!safeHttpsUrl(url));
+        function validPhotoArray(value, ownerId) {
+            return Array.isArray(value) && value.every(reference =>
+                !!mediaPhotoPath(reference, ownerId));
         }
 
         async function changeOrderPhotos(id, add, remove, context, uploaded = []) {
             return persistOperation(() => supabaseClient.rpc('change_order_photos', {
                 p_order_id: id, p_add: add, p_remove: remove, p_user_id: context.userId
-            }), uploaded, context, validPhotoArray);
+            }), uploaded, context, value => validPhotoArray(value, context.userId));
         }
 
         async function addOrderPhotos(id, files, context) {
@@ -1597,11 +1697,14 @@
         function renderPhotoGallery(container, photos = [], orderId = null) {
             if (!container) return;
             container.innerHTML = '';
+            const context = mediaContext();
+            const generation = {};
+            container.mediaGeneration = generation;
             for (const [index, url] of (Array.isArray(photos) ? photos : []).entries()) {
                 const tile = document.createElement('div');
                 tile.className = 'relative aspect-square overflow-hidden rounded-lg border';
                 const image = document.createElement('img');
-                image.src = safeHttpsUrl(url);
+                image.src = '';
                 image.alt = `Foto del trabajo ${index + 1}`;
                 image.width = 240;
                 image.height = 240;
@@ -1610,6 +1713,19 @@
                 image.setAttribute('aria-label', `Ampliar foto ${index + 1}`);
                 image.className = 'w-full h-full object-cover';
                 image.tabIndex = 0;
+                const load = async () => {
+                    try {
+                        const resolved = await resolvePhotoUrl(url, context);
+                        if (resolved && isCurrentMedia(context) && container.mediaGeneration === generation) image.src = resolved;
+                    } catch {
+                        if (isCurrentMedia(context) && container.mediaGeneration === generation) {
+                            image.src = '';
+                            image.alt = `No se pudo cargar la foto ${index + 1}. Selecciona para reintentar.`;
+                        }
+                    }
+                };
+                image.onfocus = load;
+                void load();
                 image.onclick = event => openLightbox(url, event);
                 image.onkeydown = event => {
                     if (event.key === 'Enter' || event.key === ' ') {
@@ -1648,18 +1764,12 @@
             }
         }
 
-        function verificationFileUrl(path) {
-            if (demoMode) return '';
-            if (!supabaseClient || !VERIFICATION_PATH.test(path)) return '';
-            return safeHttpsUrl(supabaseClient.storage.from('photos').getPublicUrl(path)?.data?.publicUrl);
-        }
-
         function renderVerificationSummary(order) {
             const checklist = normalizeVerificationChecklist(order.verification_checklist);
             const files = normalizeVerificationFiles(order.verification_files);
             return `<section class="mt-4 border-t pt-4"><h3 class="font-bold">Planilla de verificación</h3>
                 <dl>${VERIFICATION_ITEMS.map(item => `<div class="py-1"><dt>${item}</dt><dd>${escapeHTML(checklist[item].status || 'Pendiente')} — ${escapeHTML(checklist[item].note)}</dd></div>`).join('')}</dl>
-                ${files.map(path => `<p><a href="${escapeHTML(verificationFileUrl(path))}" target="_blank" rel="noopener noreferrer">${escapeHTML(path.split('/').pop())}</a></p>`).join('')}
+                ${files.map(path => `<p>${escapeHTML(path.split('/').pop())}</p>`).join('')}
             </section>`;
         }
 
@@ -1707,7 +1817,7 @@
 
         function setupVerificationEdit(order) {
             if (blockDemoMutation()) return;
-            const context = accountContext();
+            const context = mediaContext();
             const edit = {
                 context, checklist: normalizeVerificationChecklist(order.verification_checklist),
                 files: normalizeVerificationFiles(order.verification_files), selected: [], removed: []
@@ -1719,11 +1829,7 @@
                 container.innerHTML = '';
                 for (const path of edit.files) {
                     const row = document.createElement('div');
-                    const link = document.createElement('a');
-                    link.href = verificationFileUrl(path);
-                    link.textContent = path.split('/').pop();
-                    link.target = '_blank';
-                    link.rel = 'noopener noreferrer';
+                    const link = verificationDownloadButton(path, context);
                     const remove = document.createElement('button');
                     remove.type = 'button';
                     remove.textContent = 'Quitar adjunto';
@@ -1757,13 +1863,11 @@
                     const payload = { verification_checklist: edit.checklist, verification_files: [...edit.files, ...uploaded] };
                     await persistOperation(() => supabaseClient.from('work_orders').update(payload)
                         .eq('id', order.id).eq('user_id', context.userId), edit.selected, context);
-                    // Only remove owner paths after confirmed persistence, never on an unknown outcome.
-                    const removed = edit.removed.filter(path => path.startsWith(`${context.userId}/verification/`));
-                    const cleanupFailed = await cleanupUploads(removed.map(uploadedPath => ({ uploadedPath })), context);
+                    // Unlink only: older backups may still reference these committed objects.
                     if (!isCurrentContext(context) || verificationEdit !== edit) return;
                     Object.assign(order, payload);
                     dirtyForms.delete('view-order-content');
-                    showNotification(cleanupFailed ? 'Planilla guardada; no se pudieron limpiar algunos adjuntos.' : 'Planilla guardada.');
+                    showNotification('Planilla guardada.');
                     viewOrder(order);
                 } catch (error) {
                     if (isCurrentContext(context)) showNotification(`No se pudo guardar la planilla: ${error.message}${error.ambiguous ? ' Los objetos se conservaron; comprueba la orden antes de reintentar.' : ''}`);
@@ -1903,6 +2007,9 @@
          * @param {string[]} order.fotos - Array de URLs de fotos
          */
         function viewOrder(order) {
+            mediaViewEpoch++;
+            lightboxSequence++;
+            document.getElementById('lightbox-img').src = '';
             const modal = document.getElementById('view-order-modal');
             const content = document.getElementById('view-order-content');
             if (demoMode) {
@@ -2186,13 +2293,21 @@
          * @param {Event} [e] - Evento click (opcional, para stopPropagation)
          * @returns {void}
          */
-        function openLightbox(url, e) {
+        async function openLightbox(url, e) {
             if (blockDemoMutation()) return;
-            const lb = document.getElementById('lightbox-modal');
-            const img = document.getElementById('lightbox-img');
-            img.src = safeHttpsUrl(url);
-            openDialog('lightbox-modal');
             if (e) e.stopPropagation();
+            const context = mediaContext();
+            const sequence = ++lightboxSequence;
+            const img = document.getElementById('lightbox-img');
+            img.src = '';
+            try {
+                const resolved = await resolvePhotoUrl(url, context);
+                if (!resolved || !isCurrentMedia(context) || sequence !== lightboxSequence) return;
+                img.src = resolved;
+                openDialog('lightbox-modal');
+            } catch {
+                if (isCurrentMedia(context) && sequence === lightboxSequence) showNotification('No se pudo cargar la foto. Vuelve a intentarlo.');
+            }
         }
         window.openLightbox = openLightbox;
 
@@ -2332,6 +2447,7 @@
                 return false;
             }
             const sequence = ++publicSequence;
+            mediaViewEpoch++;
             // Ocultar contenedores de la app privada
             authContainer.classList.add('hidden');
             appContainer.classList.add('hidden');
@@ -2384,6 +2500,10 @@
                 document.getElementById('pub-fecha').textContent = new Date(order.fecha + 'T00:00:00').toLocaleDateString('es-AR');
                 document.getElementById('pub-trabajos').textContent = order.novedades;
                 document.getElementById('pub-verification-content').innerHTML = renderVerificationSummary(order);
+                const media = mediaContext();
+                for (const path of normalizeVerificationFiles(order.verification_files)) {
+                    document.getElementById('pub-verification-content').appendChild(verificationDownloadButton(path, media));
+                }
                 
                 // Actualizar checks de adicionales
                 updatePubCheck('pub-garantia', order.garantia, 'Garantía');
@@ -2552,7 +2672,12 @@
 
         const MAX_BACKUP_BYTES = 20 * 1024 * 1024;
         const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        const VERIFICATION_PATH = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/verification\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|jpeg|png|pdf|xls|xlsx)$/i;
+        const VERIFICATION_PATH = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/verification\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|jpeg|png|pdf|xls|xlsx)$/;
+        const PHOTO_PATH = /^[0-9a-f-]{36}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|jpeg|png)$/;
+
+        function isOwnerPhotoPath(path, ownerId) {
+            return typeof path === 'string' && path.split('/')[0] === ownerId && PHOTO_PATH.test(path);
+        }
         const VERIFICATION_ITEMS = [
             'REGULADOR', 'MANGUERAS GNC', 'FILTRO DE GAS', 'CAÑO ALTA PRESION',
             'MANGUERAS AGUA', 'CUNA', 'CILINDRO', 'VALVULA CILINDRO', 'RETENCION',
@@ -2602,10 +2727,15 @@
                 if (row.monto_cobrado === undefined) row.monto_cobrado = null;
                 if (row.monto_cobrado !== null && (typeof row.monto_cobrado !== 'number' || !Number.isFinite(row.monto_cobrado) || row.monto_cobrado < 0)) throw new Error('Monto inválido.');
                 if (row.fotos === undefined) row.fotos = [];
-                if (!Array.isArray(row.fotos) || row.fotos.some(photo => typeof photo !== 'string' || !/^https:\/\/[^\s<>"']+$/.test(photo) || photo.length > 8192)) throw new Error('Las fotos deben ser URLs HTTPS.');
+                if (!Array.isArray(row.fotos)) throw new Error('Las fotos deben ser rutas privadas del usuario.');
+                row.fotos = row.fotos.map(photo => {
+                    const path = mediaPhotoPath(photo, userId);
+                    if (!path) throw new Error('Las fotos deben ser rutas privadas del usuario.');
+                    return path;
+                });
                 if (row.created_at !== undefined && (typeof row.created_at !== 'string' || !Number.isFinite(Date.parse(row.created_at)))) throw new Error('Fecha de creación inválida.');
                 if (row.verification_files === undefined) row.verification_files = [];
-                if (!Array.isArray(row.verification_files) || row.verification_files.some(path => typeof path !== 'string' || !VERIFICATION_PATH.test(path))) throw new Error('Adjuntos de verificación inválidos.');
+                if (!Array.isArray(row.verification_files) || row.verification_files.some(path => typeof path !== 'string' || !VERIFICATION_PATH.test(path) || path.split('/')[0] !== userId)) throw new Error('Adjuntos de verificación inválidos.');
                 if (row.verification_checklist === undefined) row.verification_checklist = {};
                 const sheet = row.verification_checklist;
                 if (!sheet || typeof sheet !== 'object' || Array.isArray(sheet)) throw new Error('Planilla de verificación inválida.');
@@ -2626,7 +2756,9 @@
             if (blockDemoMutation()) return;
             if (allOrders.length === 0) return showNotification("No hay datos para exportar.");
             
-            const jsonString = JSON.stringify(allOrders, null, 2);
+            let jsonString;
+            try { jsonString = JSON.stringify(normalizeBackup(allOrders, currentUser?.id), null, 2); }
+            catch { return showNotification('No se puede exportar: hay referencias ajenas o inválidas. Revisa las órdenes.'); }
             const blob = new Blob([jsonString], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');

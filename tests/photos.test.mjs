@@ -7,6 +7,20 @@ const files = count => Array.from({ length: count }, (_, index) => ({
     name: `photo-${index}.jpg`
 }));
 
+test('photo RPC results accept owner paths but reject foreign paths without compensation', async () => {
+    const app = await createApp();
+    app.login();
+    const owner = app.evaluate('currentUser.id');
+    const path = `${owner}/${ORDER_ID}.jpg`;
+    app.client.rpc = async () => ({ data: [path], error: null });
+    const result = await app.evaluate(`changeOrderPhotos('${ORDER_ID}', [], [], accountContext())`);
+    assert.equal(result[0], path);
+    for (const invalid of [`bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb/${ORDER_ID}.jpg`, `${owner}/../${ORDER_ID}.jpg`, `${owner}%2f${ORDER_ID}.jpg`]) {
+        app.client.rpc = async () => ({ data: [invalid], error: null });
+        await assert.rejects(app.evaluate(`changeOrderPhotos('${ORDER_ID}', [], [], accountContext())`), error => error.ambiguous === true);
+    }
+});
+
 function installStorage(app, uploadResults, removeResult = { error: null }) {
     const calls = { uploads: [], removals: [] };
     app.client.storage.from = () => ({
@@ -15,9 +29,7 @@ function installStorage(app, uploadResults, removeResult = { error: null }) {
             const result = uploadResults.shift();
             return typeof result === 'function' ? result(path) : result;
         },
-        getPublicUrl(path) {
-            return { data: { publicUrl: `https://example.test/photos/${path}` } };
-        },
+        getPublicUrl() { throw new Error('Public URLs are forbidden'); },
         async remove(paths) {
             calls.removals.push(paths);
             return removeResult;
@@ -132,7 +144,7 @@ test('a mismatched upload path compensates only the generated operation path', a
     assert.equal(selected[0].uploadedPath, undefined);
 });
 
-test('an invalid public URL compensates the successfully uploaded object', async () => {
+test('successful upload does not generate or compensate a public URL', async () => {
     const app = await createApp();
     app.login();
     const selected = files(1);
@@ -142,23 +154,18 @@ test('an invalid public URL compensates the successfully uploaded object', async
             storage.uploads.push({ path, blob, options });
             return { data: { path }, error: null };
         },
-        getPublicUrl() {
-            return { data: { publicUrl: 'javascript:alert(1)' } };
-        },
+        getPublicUrl() { throw new Error('Public URLs are forbidden'); },
         async remove(paths) {
             storage.removals.push(paths);
             return { error: null };
         }
     });
 
-    await assert.rejects(addPhotos(app, selected), error => {
-        assert.equal(error.photoFailure, 'upload');
-        assert.equal(error.cleanupFailed, false);
-        return true;
-    });
-    assert.equal(storage.removals.length, 1);
-    assert.equal(storage.removals[0].length, 1);
-    assert.equal(selected[0].uploadedPath, undefined);
+    app.set('testValue', selected);
+    const result = await app.evaluate('uploadFiles(testValue, accountContext())');
+    assert.deepEqual([...result], [selected[0].uploadedPath]);
+    assert.equal(storage.removals.length, 0);
+    assert.equal(selected[0].uploaded, true);
 });
 
 test('a confirmed RPC rejection compensates newly uploaded objects', async () => {
@@ -221,7 +228,7 @@ test('an ambiguous RPC result retains uploaded objects and retry metadata', asyn
         return true;
     });
     assert.equal(storage.removals.length, 0);
-    assert.match(selected[0].uploadedUrl, /^https:/);
+    assert.match(selected[0].uploadedPath, /^aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa\//);
 });
 
 test('invalid successful RPC data is ambiguous and retains uploads for retry', async () => {
@@ -244,7 +251,7 @@ test('invalid successful RPC data is ambiguous and retains uploads for retry', a
         });
         assert.equal(storage.removals.length, 0);
         assert.match(selected[0].uploadedPath, /^aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa\//);
-        assert.match(selected[0].uploadedUrl, /^https:/);
+        assert.equal(selected[0].uploaded, true);
     }
 });
 
@@ -295,7 +302,7 @@ test('retry rejection never removes objects retained from an ambiguous photo com
     await assert.rejects(addPhotos(app, selected));
     assert.equal(storage.uploads.length, 1);
     assert.equal(storage.removals.length, 0);
-    assert.ok(selected[0].uploadedUrl);
+    assert.equal(selected[0].uploaded, true);
 });
 
 test('resolved PostgREST transport errors preserve committed photos and retry the same delta', async () => {
@@ -326,7 +333,7 @@ test('resolved PostgREST transport errors preserve committed photos and retry th
         const path = selected[0].uploadedPath;
         assert.equal(storage.removals.length, 0);
         assert.equal(selected[0].commitUncertain, true);
-        assert.ok(committed.has(selected[0].uploadedUrl));
+        assert.ok(committed.has(selected[0].uploadedPath));
         await addPhotos(app, selected);
         assert.equal(storage.uploads.length, 1);
         assert.equal(storage.removals.length, 0);

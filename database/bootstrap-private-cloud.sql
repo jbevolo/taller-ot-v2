@@ -1,81 +1,77 @@
--- Apply manually only after completing the checks in database/README.md.
--- This migration creates no tables, changes no RLS policies, and grants no table access.
+-- New independent Supabase project only. Run this entire file in SQL Editor.
+-- One-shot, fail-closed setup: existing application objects require manual audit.
 begin;
+set local lock_timeout = '5s';
 
 do $preflight$
-declare
-    missing text;
-    command "char";
 begin
-    if to_regclass('public.work_orders') is null then
-        raise exception 'Existing public.work_orders table required; inspect the deployed schema first';
+    if to_regprocedure('auth.uid()') is null or to_regclass('auth.users') is null
+       or to_regrole('authenticated') is null or to_regrole('anon') is null
+       or to_regclass('storage.buckets') is null or to_regclass('storage.objects') is null then
+        raise exception 'Supabase auth and Storage prerequisites required';
     end if;
-    if to_regprocedure('auth.uid()') is null or to_regrole('authenticated') is null then
-        raise exception 'Supabase auth.uid() and authenticated role are required';
+    if to_regclass('public.work_orders') is not null then
+        raise exception 'Existing work_orders: stop and audit; no data or schema will be replaced';
     end if;
-    if not exists (
-        select 1 from pg_catalog.pg_class
-        where oid = 'public.work_orders'::regclass and relrowsecurity
-    ) then
-        raise exception 'Enable and audit owner-scoped RLS before deploying this function';
+    if exists (select 1 from pg_catalog.pg_proc p
+        join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public' and p.proname in ('restore_work_orders', 'change_order_photos',
+            'verification_checklist_is_valid', 'verification_files_are_valid',
+            'owner_media_path_is_valid', 'private_media_references_are_valid')) then
+        raise exception 'Existing application functions: stop and audit';
     end if;
-
-    select pg_catalog.string_agg(required.name, ', ') into missing
-    from pg_catalog.unnest(array['id', 'user_id', 'order_number', 'fecha', 'nombre', 'telefono',
-        'vehiculo', 'dominio', 'novedades', 'garantia', 'oblea', 'ph', 'nv', 'retencion',
-        'mangueras', 'fotos', 'status', 'monto_cobrado', 'forma_pago', 'notas_extra',
-        'created_at']) required(name)
-    where not exists (
-        select 1 from pg_catalog.pg_attribute a
-        where a.attrelid = 'public.work_orders'::regclass and a.attname = required.name
-          and a.attnum > 0 and not a.attisdropped and a.attgenerated = '' and a.attidentity = ''
-    );
-    if missing is not null then
-        raise exception 'Missing, generated, or identity application columns: %', missing;
+    -- Conservative: even unrelated policies may OR together and expose this bucket.
+    lock table storage.objects, storage.buckets in share row exclusive mode;
+    if exists (select 1 from pg_catalog.pg_policy where polrelid = 'storage.objects'::regclass) then
+        raise exception 'Unexpected Storage policies: stop and audit every policy';
     end if;
-    if (select pg_catalog.count(*) from pg_catalog.pg_attribute
-        where attrelid = 'public.work_orders'::regclass and attname in ('id', 'user_id')
-          and atttypid = 'uuid'::regtype) <> 2 then
-        raise exception 'id and user_id must be UUID columns';
+    if not exists (select 1 from pg_catalog.pg_class
+        where oid = 'storage.objects'::regclass and relrowsecurity) then
+        raise exception 'Storage objects must already enforce RLS';
     end if;
-    if not exists (
-        select 1 from pg_catalog.pg_attribute
-        where attrelid = 'public.work_orders'::regclass and attname = 'fotos'
-          and atttypid in ('jsonb'::regtype, 'json'::regtype, 'text[]'::regtype)
-    ) then
-        raise exception 'Supported fotos types: jsonb, json, or text[]';
+    if exists (select 1 from storage.buckets where id = 'photos' or name = 'photos') then
+        raise exception 'Existing photos bucket: stop and audit; never flip public state';
     end if;
-    if not exists (
-        select 1 from pg_catalog.pg_constraint c
-        join pg_catalog.pg_attribute a on a.attrelid = c.conrelid and a.attname = 'id'
-        where c.conrelid = 'public.work_orders'::regclass and c.contype in ('p', 'u')
-          and c.conkey = array[a.attnum] and not c.condeferrable
-    ) then
-        raise exception 'A nondeferrable primary or unique constraint on id is required';
-    end if;
-    if not pg_catalog.has_table_privilege('authenticated', 'public.work_orders',
-        'SELECT, INSERT, UPDATE, DELETE') then
-        raise exception 'authenticated requires existing SELECT, INSERT, UPDATE, and DELETE privileges';
-    end if;
-
-    foreach command in array array['r'::"char", 'a'::"char", 'w'::"char", 'd'::"char"] loop
-        if not exists (
-            select 1 from pg_catalog.pg_policy p
-            where p.polrelid = 'public.work_orders'::regclass
-              and p.polcmd in ('*'::"char", command)
-              and (0::oid = any(p.polroles) or to_regrole('authenticated')::oid = any(p.polroles))
-              and (command not in ('r'::"char", 'd'::"char", 'w'::"char") or p.polqual is not null)
-              and (command not in ('a'::"char", 'w'::"char") or p.polwithcheck is not null)
-        ) then
-            raise exception 'An applicable authenticated RLS policy is required for command %', command;
-        end if;
-    end loop;
 end;
 $preflight$;
 
-alter table public.work_orders
-    add column if not exists verification_checklist jsonb not null default '{}'::jsonb,
-    add column if not exists verification_files text[] not null default '{}';
+create table public.work_orders (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references auth.users(id),
+    order_number integer not null check (order_number > 0),
+    fecha date not null,
+    nombre text not null,
+    telefono text not null default '',
+    vehiculo text not null,
+    dominio text not null,
+    novedades text not null,
+    garantia boolean not null default false,
+    oblea boolean not null default false,
+    ph boolean not null default false,
+    nv boolean not null default false,
+    retencion boolean not null default false,
+    mangueras boolean not null default false,
+    fotos text[] not null default '{}',
+    verification_checklist jsonb not null default '{}',
+    verification_files text[] not null default '{}',
+    status text not null default 'Abierta' check (status in ('Abierta', 'Finalizada')),
+    monto_cobrado numeric check (monto_cobrado >= 0),
+    forma_pago text not null default '',
+    notas_extra text not null default '',
+    created_at timestamptz not null default now()
+);
+alter table public.work_orders enable row level security;
+revoke all on public.work_orders from public, anon, authenticated;
+grant select, insert, update, delete on public.work_orders to authenticated;
+create policy owner_orders on public.work_orders for all to authenticated
+    using ((select auth.uid()) = user_id)
+    with check ((select auth.uid()) = user_id);
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('photos', 'photos', false, 20971520, array['image/jpeg', 'image/png', 'application/pdf',
+    'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']);
+
+-- BEGIN EMBEDDED ATOMIC OPERATIONS (exact copy; tested in lockstep)
 
 create or replace function public.verification_checklist_is_valid(value jsonb)
 returns boolean
@@ -401,5 +397,39 @@ revoke all on function public.change_order_photos(uuid, jsonb, jsonb, uuid)
     from public, anon, authenticated;
 grant execute on function public.restore_work_orders(jsonb, uuid) to authenticated;
 grant execute on function public.change_order_photos(uuid, jsonb, jsonb, uuid) to authenticated;
+-- END EMBEDDED ATOMIC OPERATIONS
+
+create function public.private_media_references_are_valid(value text[], owner_id uuid, verification boolean)
+returns boolean
+language sql
+immutable
+strict
+set search_path = ''
+as $function$
+    select not exists (select 1 from pg_catalog.unnest(value) path
+        where public.owner_media_path_is_valid(path, owner_id, verification) is distinct from true);
+$function$;
+revoke all on function public.private_media_references_are_valid(text[], uuid, boolean) from public, anon;
+grant execute on function public.private_media_references_are_valid(text[], uuid, boolean) to authenticated;
+
+-- Every direct write and restore is private-only, including nullable array elements.
+alter table public.work_orders add constraint work_orders_private_media_valid check (
+    public.private_media_references_are_valid(fotos, user_id, false)
+    and public.private_media_references_are_valid(verification_files, user_id, true)
+);
+
+create policy owner_photo_insert on storage.objects for insert to authenticated
+    with check (bucket_id = 'photos' and (
+        public.owner_media_path_is_valid(name, (select auth.uid()), false)
+        or public.owner_media_path_is_valid(name, (select auth.uid()), true)));
+create policy owner_photo_select on storage.objects for select to authenticated
+    using (bucket_id = 'photos' and (
+        public.owner_media_path_is_valid(name, (select auth.uid()), false)
+        or public.owner_media_path_is_valid(name, (select auth.uid()), true)));
+create policy owner_photo_delete on storage.objects for delete to authenticated
+    using (bucket_id = 'photos' and (
+        public.owner_media_path_is_valid(name, (select auth.uid()), false)
+        or public.owner_media_path_is_valid(name, (select auth.uid()), true)));
+-- No UPDATE/upsert policy; clients create new random object names.
 notify pgrst, 'reload schema';
 commit;

@@ -78,7 +78,7 @@ test("local PostgreSQL proves restore transaction rollback and ownership boundar
         }
     }
 
-    const directory = mkdtempSync(join(tmpdir(), "taller-ot-pg-"));
+    const directory = mkdtempSync(join(tmpdir(), "opencode", "taller-ot-pg-"));
     const dataDirectory = join(directory, "data");
     const env = Object.fromEntries(
         Object.entries(process.env).filter(
@@ -537,6 +537,80 @@ test("local PostgreSQL proves restore transaction rollback and ownership boundar
                 ]);
             },
         );
+        await t.test('durable photo paths require the authenticated owner in restore and deltas', () => {
+            const path = `${USER_A}/${ORDER_ID}.jpg`;
+            sql(asOwner(restore([order({ fotos: [path] })])));
+            assert.deepEqual(JSON.parse(sql(asOwner(photos([path])))), [path]);
+            for (const invalid of [`${USER_B}/${ORDER_ID}.jpg`, `${USER_A}/../${ORDER_ID}.jpg`, `${USER_A}%2f${ORDER_ID}.jpg`]) {
+                assert.throws(() => sql(asOwner(restore([order({ fotos: [invalid] })]))));
+                assert.throws(() => sql(asOwner(photos([invalid]))));
+            }
+            assert.throws(() => sql(asOwner(restore([order({ verification_files: [`${USER_B}/verification/${ORDER_ID}.pdf`] })]))));
+        });
+
+        await t.test('self-contained private bootstrap executes with simulated Supabase and enforces isolation', () => {
+            // Only this test-created cluster is reset; never an ambient database.
+            sql(`drop table public.work_orders cascade;
+                drop function public.restore_work_orders(jsonb, uuid);
+                drop function public.change_order_photos(uuid, jsonb, jsonb, uuid);
+                drop function public.verification_checklist_is_valid(jsonb);
+                drop function public.verification_files_are_valid(text[]);
+                drop function if exists public.owner_media_path_is_valid(text, uuid, boolean);
+                create table auth.users (id uuid primary key);
+                insert into auth.users values ('${USER_A}'), ('${USER_B}');
+                create schema storage;
+                create table storage.buckets (id text primary key, name text, public boolean, file_size_limit bigint, allowed_mime_types text[]);
+                create table storage.objects (id uuid default gen_random_uuid(), bucket_id text references storage.buckets(id), name text);
+                alter table storage.objects enable row level security;
+                grant usage on schema storage to authenticated, anon;
+                grant select, insert, delete on storage.objects to authenticated, anon;`);
+            const bootstrap = readFileSync(new URL('../database/bootstrap-private-cloud.sql', import.meta.url), 'utf8');
+            sql(`create policy unexpected on storage.objects for select to anon using (true);`);
+            assert.throws(() => sql(bootstrap), /Unexpected Storage policies/);
+            assert.equal(sql(`select to_regclass('public.work_orders') is null;`), 't');
+            sql('drop policy unexpected on storage.objects;');
+            sql(`insert into storage.buckets values ('photos', 'photos', true, null, null);`);
+            assert.throws(() => sql(bootstrap), /Existing photos bucket/);
+            sql(`delete from storage.buckets;`);
+            sql(bootstrap);
+            assert.equal(sql(`select public from storage.buckets where id = 'photos';`), 'f');
+            assert.equal(sql(`select file_size_limit from storage.buckets where id = 'photos';`), '20971520');
+            assert.deepEqual(JSON.parse(sql(`select to_json(allowed_mime_types) from storage.buckets where id = 'photos';`)), [
+                'image/jpeg', 'image/png', 'application/pdf', 'application/vnd.ms-excel',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ]);
+            assert.equal(sql(`select count(*) from pg_policy where polrelid = 'storage.objects'::regclass
+                and polroles = array['authenticated'::regrole::oid] and polcmd in ('a', 'r', 'd');`), '3');
+            assert.equal(sql(`select has_table_privilege('anon', 'work_orders', 'SELECT, INSERT, UPDATE, DELETE');`), 'f');
+            assert.throws(() => sql(bootstrap), /Existing work_orders/);
+            const path = `${USER_A}/${ORDER_ID}.jpg`;
+            sql(asOwner(restore([order({ fotos: [path] })])));
+            assert.throws(() => sql(bootstrap), /Existing work_orders/);
+            assert.equal(sql(asOwner('select count(*) from work_orders;')), '1');
+            assert.equal(sql(asOwner('select count(*) from work_orders;', USER_B)), '0');
+            assert.throws(() => sql(`set role anon; select * from work_orders;`), /permission denied/);
+            assert.throws(() => sql(`set role anon; ${photos()}`), /permission denied/);
+            for (const invalid of ['https://foreign.test/photo.jpg', `${USER_B}/${ORDER_ID}.jpg`, `${USER_A}%2f${ORDER_ID}.jpg`, `${USER_A}/../${ORDER_ID}.jpg`]) {
+                assert.throws(() => sql(asOwner(restore([order({ fotos: [invalid] })]))));
+                assert.throws(() => sql(asOwner(photos([invalid]))));
+                assert.throws(() => sql(asOwner(`update work_orders set fotos = array[${quote(invalid)}];`)));
+            }
+            assert.throws(() => sql(asOwner(photos([], ['https://foreign.test/photo.jpg']))));
+            assert.throws(() => sql(asOwner(`update work_orders set fotos = array[null]::text[];`)));
+            assert.throws(() => sql(asOwner(`update work_orders set user_id = '${USER_B}';`)));
+            assert.throws(() => sql(asOwner(`update work_orders set verification_files = array['${USER_B}/verification/${ORDER_ID}.pdf'];`)));
+            const attachment = `${USER_A}/verification/${ORDER_ID}.pdf`;
+            sql(asOwner(restore([order({ fotos: [path], verification_files: [attachment] })])));
+            sql(asOwner(`insert into storage.objects(bucket_id, name) values ('photos', '${attachment}');`));
+            sql(asOwner(`insert into storage.objects(bucket_id, name) values ('photos', '${path}');`));
+            assert.equal(sql(asOwner('select count(*) from storage.objects;', USER_B)), '0');
+            assert.equal(sql(`set role anon; select count(*) from storage.objects;`), '0');
+            assert.throws(() => sql(`set role anon; insert into storage.objects(bucket_id, name) values ('photos', '${path}');`));
+            assert.throws(() => sql(asOwner(`insert into storage.objects(bucket_id, name) values ('photos', '${USER_B}/${ORDER_ID}.jpg');`)));
+            assert.throws(() => sql(asOwner(`insert into storage.objects(bucket_id, name) values ('photos', '${USER_A}/../bad.jpg');`)));
+            assert.equal(sql(asOwner(`delete from storage.objects returning name;`, USER_B)), '');
+            assert.deepEqual(sql(asOwner(`delete from storage.objects returning name;`)).split('\n').sort(), [attachment, path].sort());
+        });
     } finally {
         if (started) {
             execFileSync(
