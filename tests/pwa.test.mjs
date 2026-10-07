@@ -158,7 +158,11 @@ test('Pages workflow activates only on main push from repository secrets, never 
     const workflow = await read('.github/workflows/pages.yml');
     assert.match(workflow, /secrets\.TALLER_OT_SUPABASE_PUBLISHABLE_KEY/);
     assert.match(workflow, /vars\.TALLER_OT_SUPABASE_URL|secrets\.TALLER_OT_SUPABASE_URL/);
-    assert.match(workflow, /if:.*github\.ref == 'refs\/heads\/main'/);
+    // GitHub Actions forbids `secrets` inside step-level `if:` expressions, so the
+    // activation gate must be a shell condition inside the build step.
+    assert.doesNotMatch(workflow, /-?\s*if:[^\n]*secrets\./);
+    assert.match(workflow, /\[ "\$\{\{ github\.ref \}\}" = "refs\/heads\/main" \]/);
+    assert.match(workflow, /\[ -n "\$\{\{ secrets\.TALLER_OT_SUPABASE_PUBLISHABLE_KEY \}\}" \]/);
     assert.doesNotMatch(workflow, /sb_publishable_|sb_secret_|eyJhbGci|supabase\.co/);
     assert.match(workflow, /permissions:\s*\n\s+contents: read/);
     assert.doesNotMatch(workflow, /id-token: write[\s\S]*build:/);

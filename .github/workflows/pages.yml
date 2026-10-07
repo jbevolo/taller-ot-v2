@@ -37,16 +37,27 @@ jobs:
       - name: Run browser tests
         timeout-minutes: 5
         run: npm run test:browser
-      - name: Activate configured cloud build
-        if: github.ref == 'refs/heads/main' && vars.TALLER_OT_SUPABASE_URL != '' && vars.TALLER_OT_EXPECTED_SUPABASE_URL != '' && secrets.TALLER_OT_SUPABASE_PUBLISHABLE_KEY != ''
-        env:
-          TALLER_OT_SUPABASE_URL: ${{ vars.TALLER_OT_SUPABASE_URL }}
-          TALLER_OT_EXPECTED_SUPABASE_URL: ${{ vars.TALLER_OT_EXPECTED_SUPABASE_URL }}
-          TALLER_OT_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.TALLER_OT_SUPABASE_PUBLISHABLE_KEY }}
-        run: npm run build
-      - name: Build disconnected public shell
-        if: github.ref != 'refs/heads/main' || vars.TALLER_OT_SUPABASE_URL == '' || vars.TALLER_OT_EXPECTED_SUPABASE_URL == '' || secrets.TALLER_OT_SUPABASE_PUBLISHABLE_KEY == ''
-        run: npm run build
+      - name: Build Pages artifact
+        id: build
+        shell: bash
+        run: |
+          activation_ready=false
+          if [ "${{ github.ref }}" = "refs/heads/main" ] \
+            && [ -n "${{ vars.TALLER_OT_SUPABASE_URL }}" ] \
+            && [ -n "${{ vars.TALLER_OT_EXPECTED_SUPABASE_URL }}" ] \
+            && [ -n "${{ secrets.TALLER_OT_SUPABASE_PUBLISHABLE_KEY }}" ]; then
+            activation_ready=true
+          fi
+          if [ "$activation_ready" = "true" ]; then
+            echo "Building activated artifact for the configured project."
+            TALLER_OT_SUPABASE_URL="${{ vars.TALLER_OT_SUPABASE_URL }}" \
+            TALLER_OT_EXPECTED_SUPABASE_URL="${{ vars.TALLER_OT_EXPECTED_SUPABASE_URL }}" \
+            TALLER_OT_SUPABASE_PUBLISHABLE_KEY="${{ secrets.TALLER_OT_SUPABASE_PUBLISHABLE_KEY }}" \
+              npm run build
+          else
+            echo "Building disconnected artifact: activation inputs absent."
+            npm run build
+          fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
