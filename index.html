@@ -1764,13 +1764,46 @@
             }
         }
 
+        // Compact sheet CSS shared by the screen surfaces and the print window. The print
+        // window only receives utilities.css, so these rules are injected inline there too.
+        const VERIFICATION_PRINT_CSS = `
+@page { margin: 10mm; }
+body { font-family: sans-serif; }
+.verification-sheet { margin-top: 8px; padding-top: 6px; border-top: 1px solid #d8d7cd; break-inside: avoid; page-break-inside: avoid; }
+.verification-sheet h3 { margin: 0 0 4px; font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.verification-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; margin: 0; padding: 0; list-style: none; }
+.verification-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; column-gap: 6px; border-bottom: 1px dotted #cfcec4; line-height: 1.35; }
+.verification-item { font-size: 8px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.verification-code { font-size: 9px; font-weight: 700; letter-spacing: .04em; padding: 0 3px; border: 1px solid #b9b8ae; border-radius: 2px; color: #202321; white-space: nowrap; }
+.verification-code[data-status=OK] { border-color: #226459; color: #226459; }
+.verification-code[data-status=NO] { border-color: #c83819; color: #c83819; }
+.verification-row-main { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.verification-note { flex: 1; min-width: 0; font-size: 8px; color: #63675f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.verification-note-full { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.verification-empty-note { color: #9b9c93; }
+.verification-attachments { margin: 4px 0 0; font-size: 8px; color: #63675f; }
+@media (max-width: 420px) { .verification-grid { grid-template-columns: minmax(0, 1fr); } }
+@media print { body { -webkit-print-color-adjust: exact; } }`;
+
+        const VERIFICATION_STATUS_CODES = { 'OK': 'OK', 'NO OK': 'NO', 'N/A': 'NA' };
+
         function renderVerificationSummary(order) {
             const checklist = normalizeVerificationChecklist(order.verification_checklist);
             const files = normalizeVerificationFiles(order.verification_files);
-            return `<section class="mt-4 border-t pt-4"><h3 class="font-bold">Planilla de verificación</h3>
-                <dl>${VERIFICATION_ITEMS.map(item => `<div class="py-1"><dt>${item}</dt><dd>${escapeHTML(checklist[item].status || 'Pendiente')} — ${escapeHTML(checklist[item].note)}</dd></div>`).join('')}</dl>
-                ${files.map(path => `<p>${escapeHTML(path.split('/').pop())}</p>`).join('')}
-            </section>`;
+            const rows = VERIFICATION_ITEMS.map(item => {
+                const entry = checklist[item];
+                const code = VERIFICATION_STATUS_CODES[entry.status] || 'PEND';
+                const statusLabel = entry.status || 'Pendiente';
+                const note = entry.note;
+                const noteText = note
+                    ? `<span class="verification-note" aria-hidden="true">${escapeHTML(note)}</span><span class="verification-note-full">${escapeHTML(note)}</span>`
+                    : '<span class="verification-note verification-empty-note" aria-hidden="true">—</span>';
+                return `<li class="verification-row"><span class="verification-row-main"><span class="verification-item">${escapeHTML(item)}</span>`
+                    + `<span class="verification-code" data-status="${code}" title="${escapeHTML(statusLabel)}">${code}</span></span>${noteText}</li>`;
+            }).join('');
+            return `<section class="verification-sheet"><h3>Planilla de verificación</h3><ol class="verification-grid">${rows}</ol>`
+                + (files.length ? `<p class="verification-attachments">Adjuntos: ${files.map(path => escapeHTML(path.split('/').pop())).join(', ')}</p>` : '')
+                + '</section>';
         }
 
         function renderVerificationEditor(id, checklist) {
@@ -2601,7 +2634,7 @@
             if (blockDemoMutation()) return;
             const printWindow = window.open('', '_blank', 'height=600,width=800');
             if (!printWindow) return showNotification('Permite ventanas emergentes para imprimir.');
-            printWindow.document.write('<html><head><title>Orden de Trabajo</title><link rel="stylesheet" href="' + escapeHTML(new URL('assets/utilities.css', window.location.href).href) + '"><style>body{font-family:sans-serif} @media print{body{-webkit-print-color-adjust:exact}}</style></head><body><div id="print-area">');
+            printWindow.document.write('<html><head><title>Orden de Trabajo</title><link rel="stylesheet" href="' + escapeHTML(new URL('assets/utilities.css', window.location.href).href) + '"><style>' + escapeHTML(VERIFICATION_PRINT_CSS) + '</style></head><body><div id="print-area">');
             printWindow.document.write(`
                 <div class="p-8">
                     <div class="flex justify-between items-start mb-6 pb-4 border-b">

@@ -546,6 +546,70 @@ test("admin detail, public view, and printing render verification safely", async
     );
 });
 
+test("verification summary renders one compact line per item and prints on a single page", async () => {
+    const app = await createApp();
+    app.set("longNote", "Revisar ".concat("x".repeat(160)));
+    app.set("maliciousNote", `Sin fuga ${malicious}`);
+    const sheet = app.evaluate(
+        "renderVerificationSummary({verification_checklist:{REGULADOR:{status:'OK',note:maliciousNote},CUNA:{status:'NO OK',note:longNote}},verification_files:[]})"
+    );
+
+    // One dense row per canonical item, two columns of rows, no per-row vertical padding.
+    assert.equal((sheet.match(/<li class="verification-row"/g) || []).length, 12);
+    assert.ok(sheet.includes('<ol class="verification-grid"'));
+    assert.ok(!sheet.includes('py-1'));
+    assert.ok(!/<div class="py-1"><dt>/.test(sheet));
+    // Item, short status code and note share the same row.
+    const firstRow = sheet.match(/<li class="verification-row">[\s\S]*?<\/li>/)[0];
+    assert.ok(firstRow.includes('<span class="verification-item">REGULADOR</span>'));
+    assert.ok(firstRow.includes('data-status="OK"'));
+    assert.ok(firstRow.includes('verification-code'));
+    assert.ok(firstRow.includes('verification-note'));
+    assert.ok(!firstRow.includes('Pendiente'));
+    assert.ok(firstRow.includes('aria-hidden="true"'), 'truncated note copy is decorative');
+    assert.ok(firstRow.includes('verification-note-full'), 'full note stays available to assistive tech');
+    assert.ok(!firstRow.includes(malicious));
+    assert.ok(firstRow.includes('&lt;script&gt;'));
+    assert.ok(sheet.includes('data-status="PEND"'), 'unset items use a pending code');
+    assert.ok(sheet.includes('data-status="NO"'), 'NO OK renders a short code');
+    assert.equal((sheet.match(/class="verification-code"/g) || []).length, 12);
+
+    // The single renderer stays shared by detail, public and print surfaces.
+    app.login(USER_A);
+    app.set("testOrder", order());
+    app.evaluate("viewOrder(testOrder); printWorkOrder(testOrder)");
+    assert.equal(
+        (app.get("view-order-content").innerHTML.match(/class="verification-row"/g) || []).length,
+        12,
+    );
+    const printOutput = app.calls.print.join("");
+    assert.equal((printOutput.match(/class="verification-row"/g) || []).length, 12);
+    assert.ok(printOutput.includes("Planilla de verificación"));
+});
+
+test("print sheet keeps one page: page margin, no page break inside, compact spacing", async () => {
+    const app = await createApp();
+    const printCss = app.evaluate("VERIFICATION_PRINT_CSS");
+    assert.match(printCss, /@page\s*\{\s*margin:/);
+    assert.match(printCss, /break-inside:\s*avoid/);
+    assert.match(printCss, /page-break-inside:\s*avoid/);
+    assert.match(printCss, /grid-template-columns:\s*repeat\(2/);
+    assert.match(printCss, /\.verification-note\s*\{[^}]*text-overflow:\s*ellipsis/);
+    assert.match(printCss, /\.verification-code\s*\{[^}]*font-size:\s*9px/);
+
+    app.login(USER_A);
+    app.set("testOrder", order({ garantia: true, fotos: [] }));
+    app.evaluate("printWorkOrder(testOrder)");
+    const printOutput = app.calls.print.join("");
+    assert.ok(printOutput.includes(printCss), 'print window injects the compact sheet CSS');
+    // Order fields, flags and signatures are preserved next to the compact sheet.
+    for (const preserved of [
+        "ORDEN DE TRABAJO", "Cliente:", "Teléfono:", "Vehículo:", "Dominio:",
+        "Novedades y Trabajos a Realizar", "Garantía:", "Oblea:", "Retención:",
+        "Firma del Cliente", "Firma del Taller",
+    ]) assert.ok(printOutput.includes(preserved), `print sheet lost ${preserved}`);
+});
+
 test("legacy orders normalize to an incomplete empty verification sheet", async () => {
     const app = await createApp();
     const normalized = app.evaluate(

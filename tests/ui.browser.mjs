@@ -2,7 +2,7 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdtemp, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
@@ -254,6 +254,105 @@ test('mock cloud detail actions and nested dirty-dialog cancellation preserve th
         assert.deepEqual(errors, []);
         assert.deepEqual(forbidden, []);
     } finally { await context.close(); }
+});
+
+test('compact verification sheet renders 12 one-line rows and fits one print page', async () => {
+    const { page, context, errors, forbidden } = await openPage(390, true);
+    try {
+        await page.getByRole('button', { name: 'Ver orden 125', exact: true }).click();
+        const sheet = page.locator('#view-order-content .verification-sheet');
+        assert.equal(await sheet.count(), 1);
+        assert.match(await sheet.locator('h3').innerText(), /^Planilla de verificación$/);
+        assert.equal(await sheet.locator('.verification-row').count(), 12);
+        // One line per item: every row is exactly one compact line tall and all equal.
+        const heights = await sheet.locator('.verification-row').evaluateAll(nodes =>
+            nodes.map(node => Math.round(node.getBoundingClientRect().height * 10) / 10));
+        assert.equal(new Set(heights).size, 1, `rows differ in height: ${heights.join()}`);
+        assert.ok(heights[0] <= 24, `rows are not single-line: ${heights[0]}px`);
+        assert.equal(await sheet.locator('.verification-code').count(), 12);
+        assert.equal(await sheet.locator('.verification-code[data-status=PEND]').count(), 12);
+        assert.ok(await sheet.locator('.verification-item').first().isVisible());
+
+        // A long note truncates on its single line while the full text stays reachable.
+        const truncated = await page.evaluate(() => {
+            document.body.insertAdjacentHTML('beforeend', window.__ui.run(
+                'renderVerificationSummary({verification_checklist:{REGULADOR:{status:"OK",note:"Fuga".repeat(40)}},verification_files:[]})'));
+            const row = document.body.lastElementChild.querySelector('.verification-row');
+            const note = row.querySelector('.verification-note');
+            const full = row.querySelector('.verification-note-full');
+            const result = {
+                sameLine: Math.abs(note.getBoundingClientRect().top - row.querySelector('.verification-item').getBoundingClientRect().top) < 6,
+                clipped: note.scrollWidth > note.clientWidth,
+                ariaHidden: note.getAttribute('aria-hidden'),
+                fullText: full.textContent,
+                fullHidden: getComputedStyle(full).position === 'absolute'
+            };
+            row.remove();
+            return result;
+        });
+        assert.equal(truncated.sameLine, true, 'item, status and note stay on one line');
+        assert.equal(truncated.clipped, true, 'long note truncates visually');
+        assert.equal(truncated.ariaHidden, 'true');
+        assert.equal(truncated.fullText, 'Fuga'.repeat(40), 'full escaped note stays available');
+        assert.equal(truncated.fullHidden, true);
+        // No per-row vertical padding survived the redesign.
+        const padding = await sheet.locator('.verification-row').first().evaluate(node => getComputedStyle(node).padding);
+        assert.equal(padding.replace(/\s/g, ''), '0px');
+        assert.equal(await page.locator('#view-order-content .verification-note-full').count(), 0, 'empty notes add no hidden copy');
+        await noOverflow(page);
+        await page.screenshot({ path: join(screenshots, 'verification-sheet-390.png'), fullPage: true });
+        await page.keyboard.press('Escape');
+        assert.deepEqual(errors, []);
+        assert.deepEqual(forbidden, []);
+    } finally { await context.close(); }
+
+    // The real print document, captured from printWorkOrder itself, must fit one A4 page.
+    const printed = await openPage(1440, true);
+    try {
+        await printed.page.getByRole('button', { name: 'Ver orden 125', exact: true }).click();
+        const printHtml = await printed.page.evaluate(() => {
+            let markup = '';
+            const realOpen = window.open;
+            window.open = () => ({
+                document: { write: chunk => { markup += chunk; }, close() {} },
+                focus() {}, print() {}, close() {}
+            });
+            try { window.__ui.run('printWorkOrder(allOrders[0])'); } finally { window.open = realOpen; }
+            return markup;
+        });
+        assert.match(printHtml, /class="verification-grid"/);
+        assert.equal((printHtml.match(/class="verification-row"/g) || []).length, 12);
+
+        const paper = await printed.context.newPage();
+        await paper.setViewportSize({ width: 794, height: 1123 });
+        await paper.emulateMedia({ media: 'print' });
+        await paper.route('**/*', route => route.request().url().startsWith(`${origin}/`)
+            ? route.continue() : route.abort());
+        await paper.setContent(printHtml, { waitUntil: 'load' });
+        await paper.emulateMedia({ media: 'print' });
+        const sheetBox = await paper.locator('.verification-sheet').boundingBox();
+        assert.ok(sheetBox, 'sheet rendered in the print document');
+        assert.ok(sheetBox.height <= 300, `sheet too tall for one page: ${sheetBox.height}`);
+        assert.equal(
+            await paper.locator('.verification-sheet').evaluate(node => getComputedStyle(node).breakInside),
+            'avoid',
+            'the whole sheet must stay on one page'
+        );
+        assert.equal(
+            await paper.locator('.verification-sheet').evaluate(node => getComputedStyle(node).pageBreakInside),
+            'avoid'
+        );
+        assert.equal(
+            await paper.locator('.verification-grid').evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length),
+            2,
+            'print keeps two columns'
+        );
+        await paper.pdf({ path: join(screenshots, 'verification-sheet.pdf'), format: 'A4', printBackground: true });
+        const pages = readFileSync(join(screenshots, 'verification-sheet.pdf')).toString('latin1').match(/\/Type\s*\/Page[^s]/g) || [];
+        assert.equal(pages.length, 1, `the printed order must stay one page, saw ${pages.length}`);
+        assert.deepEqual(printed.errors, []);
+        assert.deepEqual(printed.forbidden, []);
+    } finally { await printed.context.close(); }
 });
 
 test('real service worker at Pages subpath restores a fully network-blocked shell and read-only demo', async () => {
